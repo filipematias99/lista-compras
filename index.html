@@ -118,6 +118,7 @@ dialog textarea{display:block;width:100%;height:150px;background:var(--s2);color
 <div id="list"></div>
 <div class="total" id="total"></div>
 <div id="charts"></div>
+<p style="text-align:center;color:#636366;font-size:.72rem;margin-top:34px">v9</p>
 </main>
 
 <div id="toast"><span id="tmsg"></span><button id="tund">Anular</button></div>
@@ -159,7 +160,7 @@ dialog textarea{display:block;width:100%;height:150px;background:var(--s2);color
   <p style="margin-top:0;font-weight:600">Sincronização online</p>
   <p style="color:var(--mut);font-size:.9rem;margin:0 0 12px">Cola o endereço da base de dados (Firebase). Tem de ser o mesmo nos dois telemóveis. Deixa vazio para desligar.</p>
   <input id="surlin" type="url" placeholder="https://xxxx-default-rtdb.europe-west1.firebasedatabase.app" autocapitalize="off" autocorrect="off" spellcheck="false">
-  <div class="row" style="margin:14px 0 0"><button id="ssave">Guardar</button><button class="sec" id="scancel">Cancelar</button></div>
+  <p id="sstat" style="margin:12px 0 0;font-size:.85rem;line-height:1.4;word-break:break-all;color:var(--mut)"></p><div class="row" style="margin:14px 0 0"><button id="ssave">Guardar e testar</button><button class="sec" id="scancel">Fechar</button></div>
 </dialog>
 
 <dialog id="rdlg">
@@ -241,16 +242,22 @@ var KEY="listaCompras.v1";
 var S={items:[],known:{},hide:false,rules:{add:"",skip:""}};
 try{var raw=localStorage.getItem(KEY);if(raw){var o=JSON.parse(raw);if(o&&o.items)S=Object.assign(S,o)}}catch(e){}
 var DB=null,lastSent="",pushT,showAll=false,mergeMode=false;
-var SYNC_KEY="listaCompras.syncUrl",syncUrl="",syncOk=false,pollT,firstPull=true;
+var SYNC_KEY="listaCompras.syncUrl",syncUrl="",syncOk=false,syncErr="",announce=false,pollT,firstPull=true;
 try{syncUrl=localStorage.getItem(SYNC_KEY)||""}catch(e){}
 function surl(){return syncUrl?syncUrl.replace(/\/+$/,"").replace(/\.json$/,"")+"/lista.json":""}
-function setSync(v){var n=v===1;if(n!==syncOk){syncOk=n;render()}}
+function syncMsg(e){
+  if(e===401||e===403)return "regras do Firebase bloqueiam (publica as Rules)";
+  if(e===404)return "endereço não encontrado";
+  if(typeof e==="number")return "erro "+e;
+  return "sem ligação ou endereço errado";
+}
+function setSync(v,msg){var n=v===1,e=n?"":(msg||"");if(n!==syncOk||e!==syncErr){syncOk=n;syncErr=e;render()}}
 function push(){
   clearTimeout(pushT);
   pushT=setTimeout(function(){
     var j=JSON.stringify(S);if(j===lastSent)return;lastSent=j;
     if(DB)DB.set({state:j,t:Date.now()}).catch(function(){lastSent=""});
-    if(surl())fetch(surl(),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({state:j,t:Date.now()})}).then(function(r){if(!r.ok)throw 0;if(JSON.stringify(S)===j){try{localStorage.removeItem("listaCompras.dirty")}catch(e){}}setSync(1)}).catch(function(){lastSent="";setSync(0)});
+    if(surl())fetch(surl(),{method:"PUT",body:JSON.stringify({state:j,t:Date.now()})}).then(function(r){if(!r.ok)throw r.status;if(JSON.stringify(S)===j){try{localStorage.removeItem("listaCompras.dirty")}catch(e){}}setSync(1)}).catch(function(e){lastSent="";setSync(0,syncMsg(e))});
   },400);
 }
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S));localStorage.setItem("listaCompras.dirty","1")}catch(e){}push()}
@@ -373,7 +380,7 @@ function sty(ci){
 }
 function render(){
   var tot=S.items.length,done=S.items.filter(function(i){return i.done}).length;
-  $("sub").textContent=(tot?(done+" de "+tot+" no carrinho"):"Lista vazia")+(DB||syncOk?" · ☁️ sincronizada":"");
+  $("sub").textContent=(tot?(done+" de "+tot+" no carrinho"):"Lista vazia")+(DB||syncOk?" · ☁️ sincronizada":(syncUrl?" · ⚠️ "+(syncErr||"a ligar…"):""));
   $("bar").style.width=(tot?done/tot*100:0)+"%";
   $("hide").textContent=S.hide?"Mostrar riscados":"Esconder riscados";
   var html="";
@@ -463,8 +470,9 @@ $("rsave").onclick=function(){S.rules={add:$("radd").value.trim(),skip:$("rskip"
 $("rcancel").onclick=function(){$("rdlg").close()};
 function pull(){
   var u=surl();if(!u)return;
-  fetch(u,{cache:"no-store"}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(d){
+  fetch(u+"?t="+Date.now()).then(function(r){if(!r.ok)throw r.status;return r.json()}).then(function(d){
     setSync(1);try{localStorage.setItem(SYNC_KEY+".joined",syncUrl)}catch(e){}
+    if(announce){announce=false;toast("Ligado com sucesso ✓")}
     if(!d||!d.state){firstPull=false;if(S.items.length||Object.keys(S.known).length){lastSent="";push()}return}
     var cur=JSON.stringify(S);
     if(firstPull&&d.state===cur){firstPull=false;return}
@@ -481,16 +489,25 @@ function pull(){
     seed();
     if(merge){lastSent="";save()}else{lastSent=d.state;try{localStorage.setItem(KEY,d.state)}catch(e){}}
     render();
-  }).catch(function(){setSync(0)});
+  }).catch(function(e){setSync(0,syncMsg(e));if(announce){announce=false;toast("Falhou: "+syncMsg(e))}});
 }
 function startSync(){clearInterval(pollT);var jn="",dt="";try{jn=localStorage.getItem(SYNC_KEY+".joined")||"";dt=localStorage.getItem("listaCompras.dirty")||""}catch(e){}firstPull=(jn!==syncUrl||dt==="1");if(surl()){pull();pollT=setInterval(pull,5000)}}
 document.addEventListener("visibilitychange",function(){if(!document.hidden)pull()});
-$("d-sync").onclick=function(){dlg.close();$("surlin").value=syncUrl;$("sdlg").showModal()};
+function testSync(){
+  var u=surl(),st=$("sstat");
+  if(!u){st.textContent="Sem endereço guardado.";return}
+  st.textContent="A testar "+u+" …";
+  fetch(u+"?t="+Date.now()).then(function(r){
+    if(!r.ok){st.textContent="✗ Resposta HTTP "+r.status+": "+syncMsg(r.status);return}
+    return r.json().then(function(d){st.textContent="✓ Ligado à base de dados. "+(d&&d.state?"Já há dados na nuvem.":"Ainda está vazia (normal na primeira vez).")});
+  }).catch(function(e){st.textContent="✗ Falhou ("+(e&&e.message||e)+"). Confirma o endereço e a internet."});
+}
+$("d-sync").onclick=function(){dlg.close();$("surlin").value=syncUrl;$("sstat").textContent=syncUrl?"Endereço guardado: "+surl():"";$("sdlg").showModal()};
 $("ssave").onclick=function(){
   var v=$("surlin").value.trim();
-  if(v&&v.indexOf("https://")!==0){toast("O endereço tem de começar por https://");return}
+  if(v&&!/^https:\/\/[^\/\s]+\.(firebasedatabase\.app|firebaseio\.com)/i.test(v)){toast("Não é o endereço da base de dados. Deve acabar em firebasedatabase.app");return}
   syncUrl=v;try{localStorage.setItem(SYNC_KEY,v)}catch(e){}
-  lastSent="";setSync(0);startSync();$("sdlg").close();toast(v?"Sincronização ligada":"Sincronização desligada");
+  lastSent="";announce=!!v;setSync(0);startSync();if(v)testSync();else $("sstat").textContent="Sincronização desligada.";
 };
 $("scancel").onclick=function(){$("sdlg").close()};
 seed();
